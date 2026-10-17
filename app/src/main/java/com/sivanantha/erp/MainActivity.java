@@ -213,7 +213,7 @@ public class MainActivity extends Activity {
         // New objects prevent filters from changing shared transaction objects.
         ArrayList<LedgerLine> report=new ArrayList<>();
         for(LedgerLine l:visible){LedgerLine copy=new LedgerLine(l.date,l.desc,l.plus,l.minus);closing+=copy.plus-copy.minus;copy.balance=closing;report.add(copy);totalIn+=copy.plus;totalOut+=copy.minus;}
-        final double finalOpening=carried,finalClosing=closing,ti=totalIn,to=totalOut;
+        final double finalOpening=carried,finalClosing=closing,ti=totalIn,totalOutValue=totalOut;
         final int finalUndated=undated;
         final String f=from,t=to;
         String period=(from.isEmpty()?"Beginning":from)+" to "+(to.isEmpty()?"Latest":to);
@@ -228,7 +228,7 @@ public class MainActivity extends Activity {
         summary.addView(text("Period outward / debit: "+unit+" "+cash(totalOut),13,muted,false));
         summary.addView(text("Closing balance: "+unit+" "+cash(closing),19,gold,true));
         summary.addView(text("Transactions: "+report.size(),12,muted,false));card(body,summary);
-        btn(body,"GENERATE DETAILED LEDGER PDF • SHARE / PRINT",()->ledgerPdf(title,name,unit,f,t,finalOpening,report,ti,to,finalClosing,finalUndated),true);
+        btn(body,"GENERATE DETAILED LEDGER PDF • SHARE / PRINT",()->ledgerPdf(title,name,unit,f,t,finalOpening,report,ti,totalOutValue,finalClosing,finalUndated),true);
         if(undated>0)body.addView(text("Note: "+undated+" transactions have missing/invalid dates and are excluded from this statement.",12,muted,false));
         if(report.isEmpty())body.addView(text("No transactions in selected period.",13,muted,false));
         for(LedgerLine l:report){LinearLayout item=vertical();item.addView(text(l.date+"  •  "+l.desc,13,navy,true));gap(item,6);
