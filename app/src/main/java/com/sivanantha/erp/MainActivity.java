@@ -44,7 +44,7 @@ public class MainActivity extends Activity {
     private LinearLayout body, root;
     private JSONArray records=new JSONArray();
     private String token="", currentTable="", query="";
-    private static final String VERSION="v1.4.1 • Auto Sync";
+    private static final String VERSION="v1.5 • Ledgers Beta";
     private boolean loading=false;
     private static final String SESSION_KEY="sivanantha_viewer_session_v1";
     private static final String[] TABLES={"weavers","designs","yarn_challans","warp_challans","grey_challans","godown_inwards","yarn_purchases","supplier_payments","coolie_vouchers","weaver_advances","grey_quality","cancelled_documents","change_history"};
@@ -72,13 +72,133 @@ public class MainActivity extends Activity {
             r.addView(text(count(TABLES[j])+" records",23,gold,true));card(body,r);
             body.getChildAt(body.getChildCount()-1).setOnClickListener(v->showTable(TABLES[j],LABELS[j],""));
         }
-        btn(body,"Weaver activity statements (PDF)",this::showWeaverStatements,true);
+        btn(body,"Business Ledgers • Weaver / Supplier / Stock",this::showLedgerMenu,true);
+        btn(body,"Weaver activity statements (PDF)",this::showWeaverStatements,false);
         btn(body,"Godown inward register (PDF)",()->createRegisterPdf("godown_inwards","GODOWN INWARD REGISTER"),false);
         btn(body,"Browse all modules",this::showModules,false);
         btn(body,"Refresh from Supabase",this::refresh,false);
         body.addView(text("Dashboard counts reflect downloaded records, not live inventory or financial balances.",12,muted,false));
     }
     private void showModules(){screen("Modules","Browse your synchronized business records");for(int i=0;i<TABLES.length;i++){final String table=TABLES[i], label=LABELS[i];TextView t=text(label+"    ·    "+count(table),15,navy,true);card(body,t);body.getChildAt(body.getChildCount()-1).setOnClickListener(v->showTable(table,label,""));}}
+
+    // v1.5 ledger calculations use the same cumulative transaction rules as Windows ERP.
+    // All results are based on the last successfully downloaded offline cache.
+    private double num(JSONObject d,String k){return d==null?0:d.optDouble(k,0);}
+    private String str(JSONObject d,String k){return d==null?"":d.optString(k,"");}
+    private String refWeaver(JSONObject d){return str(d,"weaverId").isEmpty()?str(d,"weaver_id"):str(d,"weaverId");}
+    private String cash(double n){return String.format(Locale.US,"%,.2f",n);}
+    private String kg(double n){return String.format(Locale.US,"%,.3f",n);}
+    private static class LedgerLine {
+        String date,desc;double plus,minus,balance;
+        LedgerLine(String d,String t,double p,double m){date=d;desc=t;plus=p;minus=m;}
+    }
+    private JSONObject weaverRow(String id){
+        for(int i=0;i<records.length();i++){
+            JSONObject r=records.optJSONObject(i);if(r==null||!"weavers".equals(r.optString("source_table")))continue;
+            JSONObject d=r.optJSONObject("payload");if(d!=null&&id.equals(str(d,"id")))return d;
+        }return new JSONObject();
+    }
+    private void showLedgerMenu(){
+        screen("Business Ledgers","Read-only • balances from cached Windows transactions");
+        btn(body,"Weaver Yarn Balance Ledger",()->chooseLedger("yarn"),true);
+        btn(body,"Weaver Coolie Ledger",()->chooseLedger("coolie"),false);
+        btn(body,"Weaver Advance Ledger",()->chooseLedger("advance"),false);
+        btn(body,"Weaver Production Ledger",()->chooseLedger("production"),false);
+        btn(body,"Yarn Supplier Ledger",this::chooseSupplierLedger,false);
+        btn(body,"Godown Stock Ledger",()->displayLedger("stock","Godown Stock",0,stockLines()),false);
+        body.addView(text("Balances are calculated from synchronized active records. Check against Windows ERP before official use. Godown stock is total weight, not count/color-wise stock.",12,muted,false));
+    }
+    private void chooseLedger(String kind){
+        screen("Choose Weaver","Select a weaver for "+kind+" ledger");int n=0;
+        for(int i=0;i<records.length();i++){
+            JSONObject r=records.optJSONObject(i);if(r==null||!"weavers".equals(r.optString("source_table")))continue;
+            JSONObject d=r.optJSONObject("payload");if(d==null)continue;
+            String id=str(d,"id"),name=str(d,"name");
+            if(id.isEmpty())id=r.optString("source_key");
+            final String wid=id,wn=name;
+            btn(body,name+"  •  "+kind,()->displayLedger(kind,wn,opening(kind,wid),weaverLines(kind,wid)),false);n++;
+        }
+        if(n==0)body.addView(text("No cached weavers found. Refresh online.",13,muted,false));
+    }
+    private double opening(String kind,String id){JSONObject w=weaverRow(id);return kind.equals("yarn")?num(w,"openYarn"):kind.equals("coolie")?num(w,"openCoolie"):0;}
+    private ArrayList<LedgerLine> weaverLines(String kind,String id){
+        ArrayList<LedgerLine> lines=new ArrayList<>();
+        for(int i=0;i<records.length();i++){
+            JSONObject r=records.optJSONObject(i);if(r==null)continue;JSONObject d=r.optJSONObject("payload");if(d==null||!id.equals(refWeaver(d)))continue;
+            String t=r.optString("source_table"),date=str(d,"date"),doc=recordNumber(d);
+            if(kind.equals("yarn")){
+                if(t.equals("yarn_challans")||t.equals("warp_challans"))lines.add(new LedgerLine(date,labelFor(t)+" "+doc,num(d,"totalWt"),0));
+                if(t.equals("grey_challans"))lines.add(new LedgerLine(date,"Grey Inward "+doc,0,num(d,"totalDeductWt")));
+            }else if(kind.equals("coolie")){
+                if(t.equals("grey_challans"))lines.add(new LedgerLine(date,"Grey Coolie "+doc,num(d,"totalCoolie"),num(d,"paid")));
+                if(t.equals("coolie_vouchers"))lines.add(new LedgerLine(date,"Voucher "+doc,0,num(d,"amount")));
+            }else if(kind.equals("advance")&&t.equals("weaver_advances")){
+                double amt=num(d,"amount");boolean adv="Advance".equalsIgnoreCase(str(d,"kind"));
+                lines.add(new LedgerLine(date,str(d,"kind")+" "+str(d,"reference"),adv?amt:0,adv?0:amt));
+            }else if(kind.equals("production")&&t.equals("grey_challans")){
+                lines.add(new LedgerLine(date,"Grey "+doc+" • "+str(d,"totalPcs")+" pcs",num(d,"totalMeters"),0));
+            }
+        }
+        Collections.sort(lines,(a,b)->a.date.compareTo(b.date));return lines;
+    }
+    private void chooseSupplierLedger(){
+        screen("Supplier Ledger","Choose supplier • purchases less payments");TreeSet<String> suppliers=new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        for(int i=0;i<records.length();i++){
+            JSONObject r=records.optJSONObject(i);if(r==null)continue;
+            String t=r.optString("source_table");if(!t.equals("yarn_purchases")&&!t.equals("supplier_payments"))continue;
+            String supplier=str(r.optJSONObject("payload"),"supplier");if(!supplier.isEmpty())suppliers.add(supplier);
+        }
+        for(String supplier:suppliers)btn(body,supplier,()->displayLedger("supplier",supplier,0,supplierLines(supplier)),false);
+        if(suppliers.isEmpty())body.addView(text("No synchronized supplier records.",13,muted,false));
+    }
+    private ArrayList<LedgerLine> supplierLines(String supplier){
+        ArrayList<LedgerLine> lines=new ArrayList<>();
+        for(int i=0;i<records.length();i++){
+            JSONObject r=records.optJSONObject(i);if(r==null)continue;JSONObject d=r.optJSONObject("payload");if(d==null||!supplier.equalsIgnoreCase(str(d,"supplier")))continue;
+            String t=r.optString("source_table");
+            if(t.equals("yarn_purchases"))lines.add(new LedgerLine(str(d,"date"),"Purchase "+str(d,"invoice_no"),num(d,"quantity_kg")*num(d,"rate_per_kg")+num(d,"extra_charges"),0));
+            if(t.equals("supplier_payments"))lines.add(new LedgerLine(str(d,"date"),"Payment "+str(d,"reference"),0,num(d,"amount")));
+        }Collections.sort(lines,(a,b)->a.date.compareTo(b.date));return lines;
+    }
+    private ArrayList<LedgerLine> stockLines(){
+        ArrayList<LedgerLine> lines=new ArrayList<>();
+        for(int i=0;i<records.length();i++){
+            JSONObject r=records.optJSONObject(i);if(r==null)continue;JSONObject d=r.optJSONObject("payload");if(d==null)continue;
+            String t=r.optString("source_table"),date=str(d,"date");
+            if(t.equals("godown_inwards"))lines.add(new LedgerLine(date,"Inward "+recordNumber(d)+" "+str(d,"count")+" "+str(d,"color"),num(d,"netWt"),0));
+            if(t.equals("yarn_challans")||t.equals("warp_challans"))lines.add(new LedgerLine(date,"Issue "+recordNumber(d),0,num(d,"totalWt")));
+        }Collections.sort(lines,(a,b)->a.date.compareTo(b.date));return lines;
+    }
+    private void displayLedger(String kind,String name,double opening,ArrayList<LedgerLine> lines){
+        String title=kind.equals("stock")?"Godown Stock Ledger":kind.equals("supplier")?"Supplier Ledger":("Weaver "+kind.substring(0,1).toUpperCase(Locale.US)+kind.substring(1)+" Ledger");
+        String unit=kind.equals("yarn")||kind.equals("stock")?"kg":kind.equals("production")?"m":"₹";
+        double balance=opening,totalIn=0,totalOut=0;
+        for(LedgerLine line:lines){balance+=line.plus-line.minus;line.balance=balance;totalIn+=line.plus;totalOut+=line.minus;}
+        final double finalBalance=balance,ti=totalIn,to=totalOut;
+        screen(title,name+" • Offline synchronized records");
+        LinearLayout summary=vertical();summary.addView(text(name,18,navy,true));gap(summary,7);
+        summary.addView(text("Opening: "+unit+" "+cash(opening),13,muted,false));
+        summary.addView(text("Total In / Credit: "+unit+" "+cash(ti),13,muted,false));
+        summary.addView(text("Total Out / Debit: "+unit+" "+cash(to),13,muted,false));
+        summary.addView(text("Closing balance: "+unit+" "+cash(finalBalance),19,gold,true));card(body,summary);
+        btn(body,"GENERATE LEDGER PDF • SHARE / PRINT",()->ledgerPdf(title,name,unit,opening,lines,finalBalance),true);
+        if(lines.isEmpty())body.addView(text("No matching transactions in offline cache.",13,muted,false));
+        for(LedgerLine l:lines){LinearLayout item=vertical();item.addView(text(l.date+"  •  "+l.desc,13,navy,true));gap(item,6);
+            item.addView(text("In: "+cash(l.plus)+"    Out: "+cash(l.minus)+"    Balance: "+cash(l.balance)+" "+unit,12,muted,false));card(body,item);}
+    }
+    private void ledgerPdf(String title,String name,String unit,double opening,ArrayList<LedgerLine> lines,double closing){
+        try{
+            pdfDoc=new PdfDocument();pdfPage=null;pdfPageNo=0;page(title.toUpperCase(Locale.US));
+            para("Account: "+name+"  |  Opening: "+unit+" "+cash(opening),title);
+            String[] heads={"Date","Transaction","In","Out","Balance"};float[] widths={84,177,80,80,86};
+            tableHeader(heads,widths,title);
+            for(LedgerLine l:lines)tableRow(new String[]{l.date,l.desc,cash(l.plus),cash(l.minus),cash(l.balance)},widths,title,heads);
+            para("Closing balance: "+unit+" "+cash(closing),title);
+            para("Source: Android last synced cache • Verify against Windows ERP",title);
+            exportPdf("Ledger_"+title+"_"+name);
+        }catch(Exception e){pdfFailure(e);}
+    }
+
     private void showWeaverStatements(){
         screen("Weaver statements","Choose a weaver • PDF from cached transactions");
         int found=0;
