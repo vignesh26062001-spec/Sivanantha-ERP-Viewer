@@ -1,13 +1,19 @@
-# Sivanantha Android ERP Viewer v1.3 — Fixed record display and PDF
+# SIVANANTHA Android ERP Viewer v1.4.1
 
-**What changed:** Visible v1.3 version banner; PDF button at the top and bottom of every record; `items_json` hidden from normal fields and parsed into individual cards for Yarn Issue, Warp Issue and Grey Inward; readable detail labels. Supabase read-only sync and cache logic retained.
+Based on the existing v1.4 viewer.
 
-## Build
-1. Replace the **contents at the repository root**, not in a nested folder, with this ZIP's contents.
-2. Confirm `app/build.gradle` says `versionName '1.3.0'` and `versionCode 4`.
-3. In GitHub Actions run `Build Android APK` and download `app-debug.apk` artifact.
-4. Install the APK. Open a Yarn Issue DC and check for the **v1.3 • PDF & Items Fixed** banner and **GENERATE PDF** button above the record fields.
+Changes:
+- Custom navy/gold S app launcher icon.
+- Supabase refresh token encrypted with Android Keystore (AES/GCM); viewer password is NOT saved.
+- On app startup, load offline records immediately and refresh automatically if a saved session exists.
+- Manual Refresh also renews the session.
+- Sign out keeps cached records.
+- If the session expires or is revoked, sign in again via Settings.
+- Internet failure leaves the offline cache untouched.
 
-Debug builds from different GitHub signing environments may require uninstalling the previous APK. If uninstalling, save your connection details first; cached data will be removed.
+Build: Upload ALL project files to GitHub repository root, including app and gradle.properties; run Build Android APK.
+First launch after upgrade: enter the viewer password ONCE in Settings, then reopen the app to test auto sync.
 
-This source is not device-tested. Generated PDF layout is modeled on Windows ERP, not guaranteed pixel-identical. The Android viewer must use a Supabase account with read-only RLS.
+Security: This app stores a rotating refresh token encrypted by Android Keystore, not the password. A phone with a compromised OS may still expose locally displayed business data.
+
+Not compiled or tested on a physical Android device in this environment.

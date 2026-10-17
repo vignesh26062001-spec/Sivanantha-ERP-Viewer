@@ -3,6 +3,14 @@ package com.sivanantha.erp;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.os.Bundle;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
+import android.util.Base64;
+import java.security.KeyStore;
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Color;
@@ -36,8 +44,9 @@ public class MainActivity extends Activity {
     private LinearLayout body, root;
     private JSONArray records=new JSONArray();
     private String token="", currentTable="", query="";
-    private static final String VERSION="v1.3 • PDF & Items Fixed";
+    private static final String VERSION="v1.4.1 • Auto Sync";
     private boolean loading=false;
+    private static final String SESSION_KEY="sivanantha_viewer_session_v1";
     private static final String[] TABLES={"weavers","designs","yarn_challans","warp_challans","grey_challans","godown_inwards","yarn_purchases","supplier_payments","coolie_vouchers","weaver_advances","grey_quality","cancelled_documents","change_history"};
     private static final String[] LABELS={"Weaver Master","Design Master","Yarn Issue DC","Warp Issue DC","Grey Inward","Godown Inward","Yarn Purchases","Supplier Payments","Vouchers","Weaver Advances","Grey Quality","Cancelled Documents","Change History"};
     private int dp(int n){return (int)(getResources().getDisplayMetrics().density*n+0.5f);}
@@ -49,12 +58,94 @@ public class MainActivity extends Activity {
     private void card(LinearLayout parent,View content){LinearLayout w=vertical();pad(w,16);w.setBackground(shape(Color.WHITE,16));w.setElevation(dp(2));w.addView(content);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.bottomMargin=dp(12);parent.addView(w,p);}
     private void btn(LinearLayout l,String label,Runnable action,boolean primary){TextView b=text(label,14,primary?Color.WHITE:navy,true);b.setGravity(Gravity.CENTER);pad(b,14);b.setBackground(shape(primary?navy:Color.rgb(234,238,244),12));LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.bottomMargin=dp(10);l.addView(b,p);b.setOnClickListener(v->action.run());}
     private EditText field(LinearLayout l,String hint,String value,boolean password){EditText e=new EditText(this);e.setSingleLine(true);e.setTextSize(14);e.setHint(hint);e.setText(value);e.setPadding(dp(12),dp(12),dp(12),dp(12));e.setBackground(shape(Color.rgb(239,242,247),10));if(password)e.setInputType(129);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,-2);p.bottomMargin=dp(12);l.addView(e,p);return e;}
-    @Override public void onCreate(Bundle state){super.onCreate(state);prefs=getSharedPreferences("viewer",MODE_PRIVATE);try{records=new JSONArray(prefs.getString("cache","[]"));}catch(Exception ignored){}showHome();}
+    @Override public void onCreate(Bundle state){super.onCreate(state);prefs=getSharedPreferences("viewer",MODE_PRIVATE);try{records=new JSONArray(prefs.getString("cache","[]"));}catch(Exception ignored){}showHome();autoSyncOnStartup();}
     private void screen(String title,String subtitle){root=vertical();root.setBackgroundColor(bg);setContentView(root);LinearLayout head=vertical();pad(head,20);head.setBackgroundColor(navy);TextView brand=text("SIVANANTHA  /  EXPORT FABS",12,gold,true);head.addView(brand);gap(head,5);head.addView(text(VERSION,11,Color.WHITE,true));gap(head,12);head.addView(text(title,23,Color.WHITE,true));gap(head,4);head.addView(text(subtitle,12,Color.rgb(201,210,223),false));root.addView(head);ScrollView sc=new ScrollView(this);body=vertical();pad(body,17);sc.addView(body);root.addView(sc,new LinearLayout.LayoutParams(-1,0,1));LinearLayout nav=new LinearLayout(this);nav.setBackgroundColor(Color.WHITE);String[] names={"⌂  Home","▦  Modules","↻  Refresh","⚙  Settings"};for(int i=0;i<4;i++){final int idx=i;TextView item=text(names[i],12,navy,true);item.setGravity(Gravity.CENTER);item.setPadding(0,dp(18),0,dp(18));nav.addView(item,new LinearLayout.LayoutParams(0,-2,1));item.setOnClickListener(v->{if(idx==0)showHome();if(idx==1)showModules();if(idx==2)refresh();if(idx==3)showSettings();});}root.addView(nav);}
     private String status(){String time=prefs.getString("last_sync","");return time.isEmpty()?"No cloud download yet • offline cache available after first sync":"Last downloaded: "+time;}
     private int count(String table){int n=0;for(int i=0;i<records.length();i++)if(table.equals(records.optJSONObject(i).optString("source_table")))n++;return n;}
-    private void showHome(){currentTable="";screen("Business overview",status());TextView banner=text("LIVE BUSINESS SNAPSHOT  •  "+records.length()+" RECORDS",12,gold,true);pad(banner,12);body.addView(banner);gap(body,12);TextView note=text("Windows ERP is your source of truth. This app only displays records already synchronized to Supabase.",13,muted,false);body.addView(note);gap(body,18);for(int i=0;i<Math.min(TABLES.length,6);i++){final int ix=i;LinearLayout r=vertical();r.addView(text(LABELS[i],14,navy,true));gap(r,6);r.addView(text(count(TABLES[i])+" records",24,gold,true));card(body,r);body.getChildAt(body.getChildCount()-1).setOnClickListener(v->showTable(TABLES[ix],LABELS[ix],""));}btn(body,"Browse all modules",this::showModules,true);btn(body,"Refresh from Supabase",this::refresh,false);}
+    private void showHome(){
+        currentTable="";screen("Business dashboard",status());
+        LinearLayout summary=vertical();summary.addView(text("SYNCHRONIZED BUSINESS RECORDS",12,gold,true));gap(summary,8);
+        summary.addView(text(String.valueOf(records.length()),32,navy,true));
+        summary.addView(text("Read-only • available offline after refresh",12,muted,false));card(body,summary);
+        int[] featured={0,2,3,4,5,8};
+        for(int idx:featured){final int j=idx;LinearLayout r=vertical();r.addView(text(LABELS[j],14,navy,true));gap(r,6);
+            r.addView(text(count(TABLES[j])+" records",23,gold,true));card(body,r);
+            body.getChildAt(body.getChildCount()-1).setOnClickListener(v->showTable(TABLES[j],LABELS[j],""));
+        }
+        btn(body,"Weaver activity statements (PDF)",this::showWeaverStatements,true);
+        btn(body,"Godown inward register (PDF)",()->createRegisterPdf("godown_inwards","GODOWN INWARD REGISTER"),false);
+        btn(body,"Browse all modules",this::showModules,false);
+        btn(body,"Refresh from Supabase",this::refresh,false);
+        body.addView(text("Dashboard counts reflect downloaded records, not live inventory or financial balances.",12,muted,false));
+    }
     private void showModules(){screen("Modules","Browse your synchronized business records");for(int i=0;i<TABLES.length;i++){final String table=TABLES[i], label=LABELS[i];TextView t=text(label+"    ·    "+count(table),15,navy,true);card(body,t);body.getChildAt(body.getChildCount()-1).setOnClickListener(v->showTable(table,label,""));}}
+    private void showWeaverStatements(){
+        screen("Weaver statements","Choose a weaver • PDF from cached transactions");
+        int found=0;
+        for(int i=0;i<records.length();i++){
+            JSONObject row=records.optJSONObject(i);if(row==null||!"weavers".equals(row.optString("source_table")))continue;
+            JSONObject d=row.optJSONObject("payload");if(d==null)continue;
+            String id=d.optString("id",row.optString("source_key"));String name=d.optString("name","Weaver #"+id);
+            final String selectedId=id,selectedName=name;
+            btn(body,name+"  •  Activity PDF",()->createWeaverPdf(selectedId,selectedName),false);found++;
+        }
+        if(found==0)body.addView(text("No weavers cached. Refresh online first.",13,muted,false));
+        body.addView(text("Activity statements list synced entries. They are not audited running-balance ledgers.",12,muted,false));
+    }
+    private void exportPdf(String filename){
+        try{
+            if(pdfPage!=null){pdfDoc.finishPage(pdfPage);pdfPage=null;}
+            File folder=new File(getCacheDir(),"shared_pdfs");if(!folder.exists()&&!folder.mkdirs())throw new IOException("Unable to create PDF directory");
+            File out=new File(folder,filename.replaceAll("[^A-Za-z0-9_-]","_")+".pdf");
+            try(FileOutputStream stream=new FileOutputStream(out)){pdfDoc.writeTo(stream);}
+            pdfDoc.close();pdfDoc=null;
+            Uri uri=FileProvider.getUriForFile(this,getPackageName()+".fileprovider",out);
+            Intent share=new Intent(Intent.ACTION_SEND);share.setType("application/pdf");share.putExtra(Intent.EXTRA_STREAM,uri);
+            share.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(share,"Save, print or share PDF"));
+        }catch(Exception e){pdfFailure(e);}
+    }
+    private void pdfFailure(Exception e){
+        if(pdfDoc!=null){try{if(pdfPage!=null)pdfDoc.finishPage(pdfPage);pdfDoc.close();}catch(Exception ignored){}}
+        pdfDoc=null;pdfPage=null;
+        new AlertDialog.Builder(this).setTitle("PDF generation failed").setMessage(e.getMessage()).setPositiveButton("OK",null).show();
+    }
+    private void createWeaverPdf(String weaverId,String name){
+        try{
+            String subtitle="WEAVER ACTIVITY STATEMENT";
+            pdfDoc=new PdfDocument();pdfPage=null;pdfPageNo=0;page(subtitle);
+            para("Weaver: "+name+"  |  ID: "+weaverId,subtitle);
+            para("Synced activity only • no calculated opening/closing balance",subtitle);
+            String[] heads={"Date","Module","Document","Quantity / Amount"};float[] widths={87,137,132,151};
+            tableHeader(heads,widths,subtitle);int n=0;
+            for(int i=0;i<records.length();i++){
+                JSONObject r=records.optJSONObject(i);if(r==null)continue;
+                JSONObject d=r.optJSONObject("payload");if(d==null)continue;
+                String table=r.optString("source_table");if(table.equals("weavers")||!weaverId.equals(d.optString("weaverId",d.optString("weaver_id"))))continue;
+                String qty=first(d,"totalWt","totalMeters","amount","totalCoolie","netWt");
+                tableRow(new String[]{val(d,"date"),labelFor(table),recordNumber(d),qty},widths,subtitle,heads);n++;
+            }
+            if(n==0)para("No matching synced transactions found.",subtitle);
+            para("Entries: "+n+"  |  Source: Android offline cache",subtitle);
+            exportPdf("Weaver_Activity_"+weaverId);
+        }catch(Exception e){pdfFailure(e);}
+    }
+    private void createRegisterPdf(String table,String subtitle){
+        try{
+            pdfDoc=new PdfDocument();pdfPage=null;pdfPageNo=0;page(subtitle);
+            para("Synced entries only • not a calculated live stock balance",subtitle);
+            String[] heads={"Date","Document","Weaver","Quantity / Weight"};float[] widths={95,128,139,145};
+            tableHeader(heads,widths,subtitle);int n=0;
+            for(int i=0;i<records.length();i++){
+                JSONObject r=records.optJSONObject(i);if(r==null||!table.equals(r.optString("source_table")))continue;
+                JSONObject d=r.optJSONObject("payload");if(d==null)continue;
+                String w=weaverName(d.optString("weaverId"));
+                tableRow(new String[]{val(d,"date"),recordNumber(d),w,first(d,"totalWt","netWt","totalMeters","totalPcs")},widths,subtitle,heads);n++;
+            }
+            if(n==0)para("No cached entries found.",subtitle);
+            para("Total entries: "+n,subtitle);exportPdf("Godown_Inward_Register");
+        }catch(Exception e){pdfFailure(e);}
+    }
     private String labelFor(String table){for(int i=0;i<TABLES.length;i++)if(TABLES[i].equals(table))return LABELS[i];return table;}
     private String niceLabel(String key){
         String k=key.replaceAll("([a-z])([A-Z])","$1 $2").replace('_',' ').trim();
@@ -291,11 +382,119 @@ public class MainActivity extends Activity {
         }catch(Exception ex){if(pdfDoc!=null){try{if(pdfPage!=null)pdfDoc.finishPage(pdfPage);pdfDoc.close();}catch(Exception ignored){}}pdfDoc=null;pdfPage=null;new AlertDialog.Builder(this).setTitle("PDF generation failed").setMessage(ex.getMessage()).setPositiveButton("OK",null).show();}
     }
 
-    private void showSettings(){screen("Cloud settings","Secure viewer sign-in");body.addView(text("Use your Android VIEWER account only. Do not use the Windows uploader password.",13,muted,false));gap(body,14);EditText url=field(body,"Project URL: https://xxxx.supabase.co",prefs.getString("url",""),false);EditText key=field(body,"Supabase publishable / anon key",prefs.getString("key",""),false);EditText email=field(body,"Android viewer email",prefs.getString("email",""),false);EditText password=field(body,"Viewer password (not saved)","",true);btn(body,"Save connection & sign in",()->{String u=url.getText().toString().trim().replaceAll("/+$","");String k=key.getText().toString().trim();String e=email.getText().toString().trim();String p=password.getText().toString();if(!u.matches("https://[A-Za-z0-9-]+\\.supabase\\.co")||k.isEmpty()||e.isEmpty()||p.isEmpty()){toast("Check URL, key, email and password");return;}prefs.edit().putString("url",u).putString("key",k).putString("email",e).apply();password.setText("");login(p);},true);btn(body,"Clear cached business data",()->new AlertDialog.Builder(this).setTitle("Clear offline cache?").setMessage("This removes downloaded records from this phone, not from Supabase.").setNegativeButton("Cancel",null).setPositiveButton("Clear",(d,w)->{prefs.edit().remove("cache").remove("last_sync").apply();records=new JSONArray();showHome();}).show(),false);}
+    private void showSettings(){
+        screen("Cloud settings","Automatic secure sign-in & sync");
+        body.addView(text("After the first sign-in, the app securely remembers your session and refreshes automatically on startup. Your password is never stored.",13,muted,false));
+        gap(body,14);
+        EditText url=field(body,"Project URL: https://xxxx.supabase.co",prefs.getString("url",""),false);
+        EditText key=field(body,"Supabase publishable / anon key",prefs.getString("key",""),false);
+        EditText email=field(body,"Android viewer email",prefs.getString("email",""),false);
+        EditText password=field(body,"Viewer password (first sign-in only)","",true);
+        btn(body,"Save connection & sign in",()->{
+            String u=url.getText().toString().trim().replaceAll("/+$","");
+            String k=key.getText().toString().trim(),e=email.getText().toString().trim(),pw=password.getText().toString();
+            if(!u.matches("https://[A-Za-z0-9-]+\\.supabase\\.co")||k.isEmpty()||e.isEmpty()||pw.isEmpty()){toast("Check URL, key, email and password");return;}
+            String oldIdentity=prefs.getString("url","")+"|"+prefs.getString("email","");
+            if(!oldIdentity.equals(u+"|"+e))clearSession();
+            prefs.edit().putString("url",u).putString("key",k).putString("email",e).apply();
+            password.setText("");login(pw);
+        },true);
+        btn(body,"Sign out (keep offline records)",()->{clearSession();showHome();toast("Signed out. Offline records retained.");},false);
+        btn(body,"Clear cached business data",()->new AlertDialog.Builder(this).setTitle("Clear offline cache?").setMessage("This removes downloaded records from this phone, not from Supabase.").setNegativeButton("Cancel",null).setPositiveButton("Clear",(d,w)->{prefs.edit().remove("cache").remove("last_sync").apply();records=new JSONArray();showHome();}).show(),false);
+    }
+    private SecretKey sessionKey() throws Exception {
+        KeyStore ks=KeyStore.getInstance("AndroidKeyStore");ks.load(null);
+        if(!ks.containsAlias(SESSION_KEY)){
+            KeyGenerator generator=KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES,"AndroidKeyStore");
+            generator.init(new KeyGenParameterSpec.Builder(SESSION_KEY,KeyProperties.PURPOSE_ENCRYPT|KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build());
+            generator.generateKey();
+        }
+        return (SecretKey)ks.getKey(SESSION_KEY,null);
+    }
+    private void saveSession(String refreshToken) throws Exception {
+        Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.ENCRYPT_MODE,sessionKey());
+        byte[] encrypted=cipher.doFinal(refreshToken.getBytes(StandardCharsets.UTF_8));
+        prefs.edit().putString("session_iv",Base64.encodeToString(cipher.getIV(),Base64.NO_WRAP))
+            .putString("session_data",Base64.encodeToString(encrypted,Base64.NO_WRAP)).apply();
+    }
+    private String loadSession() throws Exception {
+        String iv=prefs.getString("session_iv",""),data=prefs.getString("session_data","");
+        if(iv.isEmpty()||data.isEmpty())return "";
+        Cipher cipher=Cipher.getInstance("AES/GCM/NoPadding");
+        cipher.init(Cipher.DECRYPT_MODE,sessionKey(),new GCMParameterSpec(128,Base64.decode(iv,Base64.NO_WRAP)));
+        return new String(cipher.doFinal(Base64.decode(data,Base64.NO_WRAP)),StandardCharsets.UTF_8);
+    }
+    private void clearSession(){token="";prefs.edit().remove("session_iv").remove("session_data").apply();}
+    private JSONObject authRequest(String grant,String value) throws Exception {
+        String base=prefs.getString("url","");
+        HttpURLConnection c=conn(base+"/auth/v1/token?grant_type="+grant,"POST","");
+        c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");
+        JSONObject data=new JSONObject();
+        if("password".equals(grant)){data.put("email",prefs.getString("email",""));data.put("password",value);}
+        else data.put("refresh_token",value);
+        try(OutputStream out=c.getOutputStream()){out.write(data.toString().getBytes(StandardCharsets.UTF_8));}
+        String response=read(c);int code=c.getResponseCode();c.disconnect();
+        if(code>=300)throw new IOException("Authentication HTTP "+code);
+        return new JSONObject(response);
+    }
+    private void acceptSession(JSONObject session) throws Exception {
+        String access=session.getString("access_token"),refresh=session.getString("refresh_token");
+        saveSession(refresh);token=access;
+    }
+    private void autoSyncOnStartup(){
+        if(prefs.getString("url","").isEmpty()||prefs.getString("session_data","").isEmpty())return;
+        refresh();
+    }
+    private boolean renewSession() throws Exception {
+        String saved=loadSession();if(saved.isEmpty())return false;
+        acceptSession(authRequest("refresh_token",saved));return true;
+    }
     private void toast(String s){Toast.makeText(this,s,Toast.LENGTH_LONG).show();}
     private String read(HttpURLConnection c)throws Exception{InputStream in=(c.getResponseCode()<400)?c.getInputStream():c.getErrorStream();if(in==null)return "";ByteArrayOutputStream out=new ByteArrayOutputStream();byte[] buf=new byte[8192];int n;while((n=in.read(buf))!=-1)out.write(buf,0,n);in.close();return out.toString("UTF-8");}
     private HttpURLConnection conn(String endpoint,String method,String bearer)throws Exception{HttpURLConnection c=(HttpURLConnection)new URL(endpoint).openConnection();c.setConnectTimeout(12000);c.setReadTimeout(20000);c.setRequestMethod(method);c.setRequestProperty("apikey",prefs.getString("key",""));c.setRequestProperty("Accept","application/json");if(!bearer.isEmpty())c.setRequestProperty("Authorization","Bearer "+bearer);return c;}
-    private void login(String password){if(loading)return;loading=true;toast("Signing in…");io.execute(()->{try{String base=prefs.getString("url","");HttpURLConnection c=conn(base+"/auth/v1/token?grant_type=password","POST","");c.setDoOutput(true);c.setRequestProperty("Content-Type","application/json");JSONObject data=new JSONObject();data.put("email",prefs.getString("email",""));data.put("password",password);try(OutputStream out=c.getOutputStream()){out.write(data.toString().getBytes(StandardCharsets.UTF_8));}String response=read(c);int status=c.getResponseCode();c.disconnect();if(status>=300)throw new IOException("Sign-in failed (HTTP "+status+"): "+response.substring(0,Math.min(150,response.length())));token=new JSONObject(response).getString("access_token");runOnUiThread(()->{loading=false;refresh();});}catch(Exception ex){runOnUiThread(()->{loading=false;toast("Login error: "+ex.getMessage());});}});}
-    private void refresh(){if(loading)return;if(token.isEmpty()){showSettings();toast("Sign in to refresh. Cached records remain available offline.");return;}loading=true;toast("Refreshing records…");io.execute(()->{try{JSONArray all=new JSONArray();String base=prefs.getString("url","");for(int offset=0;offset<100000;offset+=500){String endpoint=base+"/rest/v1/erp_records?select=source_table,source_key,payload,is_deleted&is_deleted=eq.false&order=source_table.asc,source_key.asc&limit=500&offset="+offset;HttpURLConnection c=conn(endpoint,"GET",token);String response=read(c);int code=c.getResponseCode();c.disconnect();if(code>=300)throw new IOException("HTTP "+code+": "+response.substring(0,Math.min(180,response.length())));JSONArray batch=new JSONArray(response);for(int i=0;i<batch.length();i++)all.put(batch.getJSONObject(i));if(batch.length()<500)break;if(offset>=99500)throw new IOException("Too many records; cache unchanged");}String time=new SimpleDateFormat("dd MMM yyyy, hh:mm a",Locale.getDefault()).format(new Date());prefs.edit().putString("cache",all.toString()).putString("last_sync",time).apply();records=all;runOnUiThread(()->{loading=false;showHome();toast("Updated "+records.length()+" active records");});}catch(Exception ex){runOnUiThread(()->{loading=false;toast("Refresh failed; offline cache kept: "+ex.getMessage());});}});}
+    private void login(String password){
+        if(loading)return;loading=true;toast("Signing in…");
+        io.execute(()->{try{
+            acceptSession(authRequest("password",password));
+            runOnUiThread(()->{loading=false;refresh();});
+        }catch(Exception ex){runOnUiThread(()->{loading=false;toast("Login error: "+ex.getMessage());});}});
+    }
+    private void refresh(){
+        if(loading)return;
+        if(token.isEmpty()&&prefs.getString("session_data","").isEmpty()){
+            showSettings();toast("Sign in once to enable automatic sync. Offline records are available.");return;
+        }
+        loading=true;
+        io.execute(()->{
+            try{
+                // Refresh access token at every sync. Rotated refresh tokens are saved securely.
+                try{
+                    if(!renewSession())throw new IOException("No saved session");
+                }catch(Exception authError){
+                    // Do not discard saved credentials on network errors or timeouts.
+                    String message=authError.getMessage()==null?"":authError.getMessage();
+                    if(message.contains("Authentication HTTP 400")||message.contains("Authentication HTTP 401")||message.contains("Authentication HTTP 403")){
+                        clearSession();throw new IOException("Session expired. Sign in again in Settings.");
+                    }
+                    throw authError;
+                }
+                JSONArray all=new JSONArray();String base=prefs.getString("url","");
+                for(int offset=0;offset<100000;offset+=500){
+                    String endpoint=base+"/rest/v1/erp_records?select=source_table,source_key,payload,is_deleted&is_deleted=eq.false&order=source_table.asc,source_key.asc&limit=500&offset="+offset;
+                    HttpURLConnection c=conn(endpoint,"GET",token);String response=read(c);int code=c.getResponseCode();c.disconnect();
+                    if(code>=300)throw new IOException("HTTP "+code+": "+response.substring(0,Math.min(180,response.length())));
+                    JSONArray batch=new JSONArray(response);
+                    for(int i=0;i<batch.length();i++)all.put(batch.getJSONObject(i));
+                    if(batch.length()<500)break;
+                    if(offset>=99500)throw new IOException("Too many records; cache unchanged");
+                }
+                String time=new SimpleDateFormat("dd MMM yyyy, hh:mm a",Locale.getDefault()).format(new Date());
+                prefs.edit().putString("cache",all.toString()).putString("last_sync",time).apply();records=all;
+                runOnUiThread(()->{loading=false;showHome();toast("Updated "+records.length()+" active records");});
+            }catch(Exception ex){
+                runOnUiThread(()->{loading=false;toast("Sync unavailable; offline records kept: "+ex.getMessage());});
+            }
+        });
+    }
     @Override protected void onDestroy(){io.shutdownNow();super.onDestroy();}
 }
