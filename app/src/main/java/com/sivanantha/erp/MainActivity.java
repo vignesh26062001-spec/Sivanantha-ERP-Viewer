@@ -2,6 +2,7 @@ package com.sivanantha.erp;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.DatePickerDialog;
 import android.os.Bundle;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -44,7 +45,7 @@ public class MainActivity extends Activity {
     private LinearLayout body, root;
     private JSONArray records=new JSONArray();
     private String token="", currentTable="", query="";
-    private static final String VERSION="v1.5 • Ledgers Beta";
+    private static final String VERSION="v1.5.1 • Date Filters & Detailed PDFs";
     private boolean loading=false;
     private static final String SESSION_KEY="sivanantha_viewer_session_v1";
     private static final String[] TABLES={"weavers","designs","yarn_challans","warp_challans","grey_challans","godown_inwards","yarn_purchases","supplier_payments","coolie_vouchers","weaver_advances","grey_quality","cancelled_documents","change_history"};
@@ -169,33 +170,86 @@ public class MainActivity extends Activity {
             if(t.equals("yarn_challans")||t.equals("warp_challans"))lines.add(new LedgerLine(date,"Issue "+recordNumber(d),0,num(d,"totalWt")));
         }Collections.sort(lines,(a,b)->a.date.compareTo(b.date));return lines;
     }
+    // Dates are compared in ISO yyyy-MM-dd order. Missing or invalid dates are excluded
+    // from a bounded report rather than silently being assigned to an arbitrary day.
+    private String isoDate(String value){
+        if(value==null)return "";
+        value=value.trim();
+        if(value.length()<10)return "";
+        String day=value.substring(0,10);
+        if(!day.matches("\\d{4}-\\d{2}-\\d{2}"))return "";
+        try{SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd",Locale.US);f.setLenient(false);f.parse(day);return day;}
+        catch(Exception e){return "";}
+    }
     private void displayLedger(String kind,String name,double opening,ArrayList<LedgerLine> lines){
+        showFilteredLedger(kind,name,opening,lines,"","");
+    }
+    private void pickLedgerDate(String kind,String name,double opening,ArrayList<LedgerLine> lines,String from,String to,boolean start){
+        Calendar cal=Calendar.getInstance();String selected=start?from:to;
+        if(!selected.isEmpty())try{SimpleDateFormat f=new SimpleDateFormat("yyyy-MM-dd",Locale.US);cal.setTime(f.parse(selected));}catch(Exception ignored){}
+        new DatePickerDialog(this,(view,year,month,day)->{
+            String value=String.format(Locale.US,"%04d-%02d-%02d",year,month+1,day);
+            String f=start?value:from,t=start?to:value;
+            if(!f.isEmpty()&&!t.isEmpty()&&f.compareTo(t)>0){
+                new AlertDialog.Builder(this).setMessage("From date must be on or before To date.").setPositiveButton("OK",null).show();return;
+            }
+            showFilteredLedger(kind,name,opening,lines,f,t);
+        },cal.get(Calendar.YEAR),cal.get(Calendar.MONTH),cal.get(Calendar.DAY_OF_MONTH)).show();
+    }
+    private void showFilteredLedger(String kind,String name,double opening,ArrayList<LedgerLine> lines,String from,String to){
         String title=kind.equals("stock")?"Godown Stock Ledger":kind.equals("supplier")?"Supplier Ledger":("Weaver "+kind.substring(0,1).toUpperCase(Locale.US)+kind.substring(1)+" Ledger");
-        String unit=kind.equals("yarn")||kind.equals("stock")?"kg":kind.equals("production")?"m":"₹";
-        double balance=opening,totalIn=0,totalOut=0;
-        for(LedgerLine line:lines){balance+=line.plus-line.minus;line.balance=balance;totalIn+=line.plus;totalOut+=line.minus;}
-        final double finalBalance=balance,ti=totalIn,to=totalOut;
-        screen(title,name+" • Offline synchronized records");
+        String unit=kind.equals("yarn")||kind.equals("stock")?"kg":kind.equals("production")?"m":"Rs.";
+        ArrayList<LedgerLine> visible=new ArrayList<>();
+        double carried=opening,totalIn=0,totalOut=0,closing;
+        int undated=0;
+        for(LedgerLine l:lines){
+            String day=isoDate(l.date);
+            if(day.isEmpty()){undated++;continue;}
+            if(!from.isEmpty()&&day.compareTo(from)<0){carried+=l.plus-l.minus;continue;}
+            if(!to.isEmpty()&&day.compareTo(to)>0)continue;
+            visible.add(l);
+        }
+        closing=carried;
+        // New objects prevent filters from changing shared transaction objects.
+        ArrayList<LedgerLine> report=new ArrayList<>();
+        for(LedgerLine l:visible){LedgerLine copy=new LedgerLine(l.date,l.desc,l.plus,l.minus);closing+=copy.plus-copy.minus;copy.balance=closing;report.add(copy);totalIn+=copy.plus;totalOut+=copy.minus;}
+        final double finalOpening=carried,finalClosing=closing,ti=totalIn,to=totalOut;
+        final int finalUndated=undated;
+        final String f=from,t=to;
+        String period=(from.isEmpty()?"Beginning":from)+" to "+(to.isEmpty()?"Latest":to);
+        screen(title,name+" • "+period);
+        btn(body,"FROM DATE: "+(from.isEmpty()?"All dates":from),()->pickLedgerDate(kind,name,opening,lines,f,t,true),false);
+        btn(body,"TO DATE: "+(to.isEmpty()?"All dates":to),()->pickLedgerDate(kind,name,opening,lines,f,t,false),false);
+        btn(body,"CLEAR DATE FILTER",()->showFilteredLedger(kind,name,opening,lines,"",""),false);
         LinearLayout summary=vertical();summary.addView(text(name,18,navy,true));gap(summary,7);
-        summary.addView(text("Opening: "+unit+" "+cash(opening),13,muted,false));
-        summary.addView(text("Total In / Credit: "+unit+" "+cash(ti),13,muted,false));
-        summary.addView(text("Total Out / Debit: "+unit+" "+cash(to),13,muted,false));
-        summary.addView(text("Closing balance: "+unit+" "+cash(finalBalance),19,gold,true));card(body,summary);
-        btn(body,"GENERATE LEDGER PDF • SHARE / PRINT",()->ledgerPdf(title,name,unit,opening,lines,finalBalance),true);
-        if(lines.isEmpty())body.addView(text("No matching transactions in offline cache.",13,muted,false));
-        for(LedgerLine l:lines){LinearLayout item=vertical();item.addView(text(l.date+"  •  "+l.desc,13,navy,true));gap(item,6);
+        summary.addView(text("Period: "+period,12,muted,false));
+        summary.addView(text("Opening / brought forward: "+unit+" "+cash(carried),13,muted,false));
+        summary.addView(text("Period inward / credit: "+unit+" "+cash(totalIn),13,muted,false));
+        summary.addView(text("Period outward / debit: "+unit+" "+cash(totalOut),13,muted,false));
+        summary.addView(text("Closing balance: "+unit+" "+cash(closing),19,gold,true));
+        summary.addView(text("Transactions: "+report.size(),12,muted,false));card(body,summary);
+        btn(body,"GENERATE DETAILED LEDGER PDF • SHARE / PRINT",()->ledgerPdf(title,name,unit,f,t,finalOpening,report,ti,to,finalClosing,finalUndated),true);
+        if(undated>0)body.addView(text("Note: "+undated+" transactions have missing/invalid dates and are excluded from this statement.",12,muted,false));
+        if(report.isEmpty())body.addView(text("No transactions in selected period.",13,muted,false));
+        for(LedgerLine l:report){LinearLayout item=vertical();item.addView(text(l.date+"  •  "+l.desc,13,navy,true));gap(item,6);
             item.addView(text("In: "+cash(l.plus)+"    Out: "+cash(l.minus)+"    Balance: "+cash(l.balance)+" "+unit,12,muted,false));card(body,item);}
     }
-    private void ledgerPdf(String title,String name,String unit,double opening,ArrayList<LedgerLine> lines,double closing){
+    private void ledgerPdf(String title,String name,String unit,String from,String to,double opening,ArrayList<LedgerLine> lines,double totalIn,double totalOut,double closing,int undated){
         try{
             pdfDoc=new PdfDocument();pdfPage=null;pdfPageNo=0;page(title.toUpperCase(Locale.US));
-            para("Account: "+name+"  |  Opening: "+unit+" "+cash(opening),title);
-            String[] heads={"Date","Transaction","In","Out","Balance"};float[] widths={84,177,80,80,86};
+            para("Account: "+name,title);
+            para("Period: "+(from.isEmpty()?"Beginning":from)+" to "+(to.isEmpty()?"Latest":to),title);
+            para("Last synced: "+prefs.getString("last_sync","Not recorded")+"  |  Unit: "+unit,title);
+            total("Opening / balance brought forward: "+unit+" "+cash(opening),title);
+            String[] heads={"Date","Transaction / Reference","In","Out","Balance"};float[] widths={84,177,80,80,86};
             tableHeader(heads,widths,title);
             for(LedgerLine l:lines)tableRow(new String[]{l.date,l.desc,cash(l.plus),cash(l.minus),cash(l.balance)},widths,title,heads);
-            para("Closing balance: "+unit+" "+cash(closing),title);
-            para("Source: Android last synced cache • Verify against Windows ERP",title);
-            exportPdf("Ledger_"+title+"_"+name);
+            para("Transactions in selected period: "+lines.size(),title);
+            total("Period totals: In "+cash(totalIn)+" | Out "+cash(totalOut)+" "+unit,title);
+            total("Closing balance: "+unit+" "+cash(closing),title);
+            if(undated>0)para("Excluded transactions with missing dates: "+undated,title);
+            para("Read-only offline cache • Reconcile with Windows ERP before official use",title);
+            exportPdf("Ledger_"+title+"_"+name+"_"+(from.isEmpty()?"ALL":from)+"_"+(to.isEmpty()?"ALL":to));
         }catch(Exception e){pdfFailure(e);}
     }
 
